@@ -1,0 +1,12 @@
+# generated model outputs (regenerate with run_AGAMA_model.py)
+test_run/
+*.hdf5
+model_*.txt
+model_*.ini
+model_*.png
+# pre-git backups of the original scripts (originals are in the first commit)
+_orig_backup/
+# Python / OS clutter
+__pycache__/
+*.pyc
+.DS_Store
