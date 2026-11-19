@@ -206,3 +206,47 @@ def write_pcls_wgas(pos_stars, vel_stars, m_stars,
 
         file.close()
         # all done! 
+
+def write_snapshot(parts, file_out):
+        '''General Gadget HDF5 IC writer.
+        parts: dict {ptype: dict(pos=, vel=, mass=[, u=])}, ptype in 0..5.
+        Particle IDs are unique across types, assigned in increasing ptype order starting at 1.
+        Returns {ptype: first ParticleID of that type}.'''
+        npart = np.zeros(6, dtype=np.int64)
+        for t, d in parts.items():
+                npart[t] = len(d['mass'])
+        file = h5py.File(file_out, 'w')
+        h = file.create_group("Header")
+        h.attrs['NumPart_ThisFile'] = npart
+        h.attrs['NumPart_Total'] = npart
+        h.attrs['NumPart_Total_HighWord'] = 0*npart
+        h.attrs['MassTable'] = np.zeros(6)
+        h.attrs['Time'] = 0.0
+        h.attrs['Redshift'] = 0.0
+        h.attrs['BoxSize'] = 1000.
+        h.attrs['NumFilesPerSnapshot'] = 1
+        h.attrs['Omega0'] = 1.0
+        h.attrs['OmegaLambda'] = 0.0
+        h.attrs['HubbleParam'] = 1.0
+        h.attrs['Flag_Sfr'] = 1
+        h.attrs['Flag_Cooling'] = 0
+        h.attrs['Flag_StellarAge'] = 1
+        h.attrs['Flag_Metals'] = 1
+        h.attrs['Flag_Feedback'] = 1
+        h.attrs['Flag_DoublePrecision'] = 0
+        h.attrs['Flag_IC_Info'] = 0
+        first, nextid = {}, 1
+        for t in sorted(parts):
+                d = parts[t]
+                n = len(d['mass'])
+                first[t] = nextid
+                p = file.create_group("PartType%d" % t)
+                p.create_dataset("Coordinates", data=d['pos'])
+                p.create_dataset("Velocities", data=d['vel'])
+                p.create_dataset("ParticleIDs", data=np.arange(nextid, nextid + n))
+                p.create_dataset("Masses", data=d['mass'])
+                if t == 0 and d.get('u') is not None:
+                        p.create_dataset("InternalEnergy", data=d['u'])
+                nextid += n
+        file.close()
+        return first

@@ -18,6 +18,9 @@ Method (follows AGAMA's py/example_self_consistent_model*.py):
   Optional gas disc (--gas-frac > 0, see gas_disc.py): an isothermal exponential gas disc in
   vertical hydrostatic equilibrium, included as a static component of the self-consistent
   model and recomputed in the updated total potential after every iteration.
+  Optional DM substructure (--sub-frac > 0, see substructure.py): a fraction of the halo mass is
+  moved into bound NFW subhaloes on equilibrium orbits; their mean density is a static component
+  of the model, so the total mean potential is unchanged. Subhalo particles are PartType3.
 
 Units: Msun, kpc, km/s (G = 4.30092e-6 kpc (km/s)^2 / Msun). Output text files are
 in these units; use --mass-unit when writing HDF5 to match Gadget's UnitMass.
@@ -26,6 +29,7 @@ Usage:
     python run_AGAMA_model.py AGAMA_C10p0_MD0p03.ini --ndisk 1000000 --nhalo 10000000
     python run_AGAMA_model.py AGAMA_*.ini --ndisk 200000 --nhalo 1000000 --hdf5
     python run_AGAMA_model.py AGAMA_C7p5_MD0p02.ini --gas-frac 0.1 --gas-cs 10 --ngas 20000 --hdf5
+    python run_AGAMA_model.py AGAMA_C7p5_MD0p02.ini --sub-frac 0.05 --nhalo 1e7 --hdf5 --tag sub0p05
 """
 import os
 import sys
@@ -101,7 +105,7 @@ def print_info(model, label, gas=None):
     sys.stdout.flush()
 
 
-def build_model(cfg, niter=5, verbose=True, gas=None):
+def build_model(cfg, niter=5, verbose=True, gas=None, sub=None):
     scm = dict(cfg['scm'])
     if gas is not None:
         # the gas layer is only ~10-50 pc thick: the CylSpline potential grid must resolve it
@@ -114,11 +118,14 @@ def build_model(cfg, niter=5, verbose=True, gas=None):
 
     # initial guess for the density profiles
     densDiskInit = agama.Density(**cfg['potDisk'])
-    densHaloInit = agama.Density(**cfg['potHalo'])
+    # with substructure, the DF-based halo is only the smooth part of the host halo
+    densHaloInit = sub.dens_smooth if sub is not None else agama.Density(**cfg['potHalo'])
     model.components.append(agama.Component(density=densDiskInit, disklike=True))
     model.components.append(agama.Component(density=densHaloInit, disklike=False))
     if gas is not None:
         model.components.append(agama.Component(density=gas.initial_density(), disklike=True))
+    if sub is not None:  # static mean density of the subhalo population (always the last component)
+        model.components.append(agama.Component(density=sub.dens_mean, disklike=False))
     model.iterate()
     if gas is not None:  # first hydrostatic update in the initial-guess potential
         gas.density = gas.update(model.potential)
@@ -251,6 +258,16 @@ def main():
     ap.add_argument('--gas-eos', choices=['isothermal', 'adiabatic'], default='isothermal',
                     help='sets u: isothermal -> u = cs^2 (Gadget-4 ISOTHERM_EQS); adiabatic -> u = cs^2/(gamma-1)')
     ap.add_argument('--gas-gamma', type=float, default=5. / 3, help='adiabatic index for --gas-eos adiabatic')
+    ap.add_argument('--sub-frac', type=float, default=0.0,
+                    help='fraction of the host halo mass in subhaloes; 0 = no substructure (default)')
+    ap.add_argument('--sub-mmin', type=float, default=None, help='min subhalo mass [Msun] (default 100 particles)')
+    ap.add_argument('--sub-mmax', type=float, default=None, help='max subhalo mass [Msun] (default 0.01 M_halo)')
+    ap.add_argument('--sub-slope', type=float, default=-1.9, help='mass function slope dN/dm ~ m^slope')
+    ap.add_argument('--sub-rb', type=float, default=None,
+                    help='anti-bias radius [kpc]: local subhalo fraction ~ r/(r+r_b) (default 0.5 r200)')
+    ap.add_argument('--sub-rcut', type=float, default=None, help='outer cutoff of subhalo distribution [kpc] (default r200)')
+    ap.add_argument('--sub-c0', type=float, default=10.0, help='subhalo concentration c200 at 1e12 Msun (c ~ m^-0.1)')
+    ap.add_argument('--softening', type=float, default=0.1, help='DM softening [kpc], only used for warnings')
     ap.add_argument('--no-diagnostics', action='store_true', help='skip rotation curve/profile output')
     args = ap.parse_args()
 
@@ -272,8 +289,18 @@ def main():
             gas = GasDisc(Mgas, Rdg, args.gas_cs, Rtrunc=args.gas_rtrunc)
             print('  gas disc: M=%.4g Msun (f_gas=%.3g), Rd=%.3g kpc, cs=%.3g km/s, Rtrunc=%.3g kpc' %
                   (Mgas, args.gas_frac, Rdg, args.gas_cs, gas.Rtrunc))
+        sub = None
+        if args.sub_frac > 0:
+            from substructure import SubhaloPopulation
+            densHost = agama.Density(**cfg['potHalo'])
+            Mhost = densHost.totalMass()
+            sub = SubhaloPopulation(densHost, Mhost, f_sub=args.sub_frac, m_min=args.sub_mmin,
+                                    m_max=args.sub_mmax, slope=args.sub_slope, r_b=args.sub_rb,
+                                    r_cut=args.sub_rcut, c0=args.sub_c0, particle_mass=Mhost / args.nhalo,
+                                    rng=np.random.default_rng(args.seed))
+            print('  substructure: ' + sub.summary())
         t0 = time.time()
-        model, dfDisk, dfHalo = build_model(cfg, niter=args.niter, gas=gas)
+        model, dfDisk, dfHalo = build_model(cfg, niter=args.niter, gas=gas, sub=sub)
         print('Model built in %.1f s' % (time.time() - t0))
 
         prefix = os.path.join(args.outdir, 'model_' + tag)
@@ -282,10 +309,11 @@ def main():
             write_diagnostics(prefix, model, dfDisk, cfg, Rdisk)
         model.potential.export(prefix + '_potential.ini')
 
-        print('Sampling %d disc and %d halo particles...' % (even(args.ndisk), even(args.nhalo)))
+        nhalo = even(args.nhalo - (sub.npart.sum() if sub is not None else 0))  # smooth-halo particles
+        print('Sampling %d disc and %d %shalo particles...' % (even(args.ndisk), nhalo, 'smooth ' if sub else ''))
         t0 = time.time()
         posvelD, massD = agama.GalaxyModel(potential=model.potential, df=dfDisk, af=model.af).sample(even(args.ndisk))
-        posvelH, massH = agama.GalaxyModel(potential=model.potential, df=dfHalo, af=model.af).sample(even(args.nhalo))
+        posvelH, massH = agama.GalaxyModel(potential=model.potential, df=dfHalo, af=model.af).sample(nhalo)
         print('  sampled in %.1f s; disc mass %.4g, halo mass %.4g Msun' %
               (time.time() - t0, massD.sum(), massH.sum()))
 
@@ -307,7 +335,39 @@ def main():
                   (ngas, massG.sum(), uG[0], args.gas_eos, 100 * fneg))
             print('  wrote %s' % fgas)
 
-        if args.hdf5:
+        fsub = fcat = None
+        if sub is not None:
+            t0 = time.time()
+            S = sub.sample(model.potential, softening=args.softening)
+            fsub = os.path.join(args.outdir, 'model_sub_final_%s.txt' % tag)
+            np.savetxt(fsub, np.column_stack((S['pos'], S['vel'], S['mass'], S['subid'])),
+                       fmt=['%.8g'] * 7 + ['%d'], delimiter='\t',
+                       header='x\ty\tz\tvx\tvy\tvz\tmass\tsubid', comments='#')
+            fcat = os.path.join(args.outdir, 'model_subhalos_%s.txt' % tag)
+            cat = S['catalogue']
+            print('  sampled %d subhaloes (%d particles) in %.1f s; centres at r = %.1f-%.1f kpc '
+                  '(median %.1f), tidal radii %.2f-%.2f kpc' %
+                  (len(cat), len(S['mass']), time.time() - t0, cat[:, 9].min(), cat[:, 9].max(),
+                   np.median(cat[:, 9]), cat[:, 11].min(), cat[:, 11].max()))
+            for w in S['warnings']:
+                print('  WARNING: ' + w)
+            print('  wrote %s' % fsub)
+
+        if args.hdf5 and sub is not None:
+            from write_mirror_particles import mirror_agama_all
+            fh5 = os.path.join(args.outdir, 'model_final_%s.hdf5' % tag)
+            ids = mirror_agama_all(fstars, fdm, fh5, gas_file_in=fgas, sub=S, mass_unit=args.mass_unit)
+            # catalogue with the ParticleID range of each subhalo (PartType3, contiguous per subhalo)
+            first = ids[3] + np.r_[0, np.cumsum(cat[:, 2])[:-1]].astype(np.int64)
+            np.savetxt(fcat, np.column_stack((cat, first, first + cat[:, 2] - 1)),
+                       fmt=['%d', '%.6g', '%d'] + ['%.6g'] * 10 + ['%d', '%d'], delimiter='\t',
+                       header=sub.CAT_HEADER + '\tpid_first\tpid_last', comments='#')
+            print('  wrote %s (masses in units of %.3g Msun)\n  wrote %s' % (fh5, args.mass_unit, fcat))
+        elif sub is not None:
+            np.savetxt(fcat, S['catalogue'], fmt=['%d', '%.6g', '%d'] + ['%.6g'] * 10, delimiter='\t',
+                       header=sub.CAT_HEADER, comments='#')
+            print('  wrote %s' % fcat)
+        elif args.hdf5:
             fh5 = os.path.join(args.outdir, 'model_final_%s.hdf5' % tag)
             if fgas is None:
                 from write_mirror_particles import mirror_agama

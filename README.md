@@ -11,12 +11,19 @@ make_AGAMA_ini.py    ->  ini/AGAMA_C<C>_MD<MD>.ini        model parameters (grid
 run_AGAMA_model.py   ->  model_{stars,dm[,gas]}_final_<tag>.txt  + model_final_<tag>.hdf5 (--hdf5)
 check_gadget_run.py      stability diagnostics of a Gadget-4 run (halo/disc radii, thickness, dispersions, A2, energy)
 plot_projection_grid.py  face-on / edge-on projections of every snapshot (--ptype 0 for gas)
+check_subhalos.py        track subhalo orbits and mass loss (PartType3) through a Gadget-4 run
+plot_substructure_evolution.py  face-on/edge-on projections per snapshot of disc, smooth halo and subhaloes
 ```
 
 * **Disc:** `QuasiIsothermal` DF; **halo:** isotropic `QuasiSpherical` DF reproducing a Hernquist profile.
   Both are iterated to self-consistency in the total potential.
 * **Gas (optional, `gas_disc.py`):** isothermal exponential disc in vertical hydrostatic equilibrium,
   included in the self-consistent potential; `u = c_s^2` for Gadget-4 `ISOTHERM_EQS`.
+* **DM substructure (optional, `substructure.py`):** a fraction `--sub-frac` of the halo mass in
+  bound, tidally truncated NFW subhaloes (dN/dm ~ m^-1.9, anti-biased radial distribution, orbits from
+  an equilibrium DF). The smooth halo is reduced by the mean subhalo density, so the mean potential is
+  unchanged. Subhalo particles are PartType3 (same particle mass as the halo), not mirrored; a
+  catalogue `model_subhalos_<tag>.txt` lists each subhalo's properties and ParticleID range.
 * HDF5 output is point-symmetrically mirrored (`write_mirror_particles.py`); masses default to Msun,
   matching gadget4 `UnitMass_in_g = 1.988e33`.
 
@@ -26,7 +33,10 @@ plot_projection_grid.py  face-on / edge-on projections of every snapshot (--ptyp
 cd ini && python ../make_AGAMA_ini.py && cd ..
 python run_AGAMA_model.py ini/AGAMA_C7p5_MD0p02.ini --ndisk 1e6 --nhalo 1e7 --hdf5
 python run_AGAMA_model.py ini/AGAMA_C7p5_MD0p02.ini --gas-frac 0.1 --gas-cs 10 --ngas 1e6 --hdf5 --tag gas0p1
+python run_AGAMA_model.py ini/AGAMA_C7p5_MD0p02.ini --sub-frac 0.05 --nhalo 1e7 --hdf5 --tag sub0p05
 ```
+
+For Gadget-4 runs with substructure, set `SofteningClassOfPartType3` to the halo softening class.
 
 ## Installing AGAMA (macOS, Homebrew)
 

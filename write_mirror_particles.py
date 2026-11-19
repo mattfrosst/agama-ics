@@ -13,7 +13,7 @@ import scipy.stats as stats
 from scipy.interpolate import interpn
 
 #write to hdf5
-from write_to_hdf5 import write_pcls, just_write_halo_pcls, write_pcls_wgas
+from write_to_hdf5 import write_pcls, just_write_halo_pcls, write_pcls_wgas, write_snapshot
 
 #LOAD FUNC#################################################################
 def load_file_agama(file):
@@ -111,6 +111,30 @@ def mirror_agama_wgas(star_file_in, dm_file_in, gas_file_in, out_file, mass_unit
     print('mirrored: disc %d, halo %d, gas %d particles' % (len(sm), len(hm), len(gm)))
     write_pcls_wgas(sp, sv, sm / mass_unit, hp, hv, hm / mass_unit, gp, gv, gm / mass_unit,
                     out_file, u_gas=gu)
+
+def mirror_agama_all(star_file_in, dm_file_in, out_file, gas_file_in=None, sub=None, mass_unit=1.0):
+    '''Disc (PartType2) and smooth halo (PartType1) [and gas (PartType0)] are mirrored as in
+    mirror_agama; subhalo particles (sub = dict(pos, vel, mass), PartType3) are NOT mirrored,
+    since that would split each subhalo in two. The whole system is then shifted to zero
+    centre of mass and zero net momentum. Returns {ptype: first ParticleID}.'''
+    sp, sv, sm = mirror_halves(*load_file_agama(star_file_in))
+    hp, hv, hm = mirror_halves(*load_file_agama(dm_file_in))
+    parts = {2: dict(pos=sp, vel=sv, mass=sm), 1: dict(pos=hp, vel=hv, mass=hm)}
+    if gas_file_in is not None:
+        g = pd.read_csv(gas_file_in, sep=r"\s+", header=0)
+        gp, gv, gm, gu = mirror_halves(g[['#x', 'y', 'z']].to_numpy(), g[['vx', 'vy', 'vz']].to_numpy(),
+                                       g['mass'].to_numpy(), g['u'].to_numpy())
+        parts[0] = dict(pos=gp, vel=gv, mass=gm, u=gu)
+    if sub is not None:
+        parts[3] = dict(pos=np.array(sub['pos']), vel=np.array(sub['vel']), mass=np.array(sub['mass']))
+    mtot = sum(d['mass'].sum() for d in parts.values())
+    xcm = sum((d['pos'] * d['mass'][:, None]).sum(0) for d in parts.values()) / mtot
+    vcm = sum((d['vel'] * d['mass'][:, None]).sum(0) for d in parts.values()) / mtot
+    for d in parts.values():
+        d['pos'] = d['pos'] - xcm; d['vel'] = d['vel'] - vcm; d['mass'] = d['mass'] / mass_unit
+    print('recentred by dx=%s kpc, dv=%s km/s; N per type: %s' %
+          (np.round(xcm, 4), np.round(vcm, 4), {t: len(d['mass']) for t, d in sorted(parts.items())}))
+    return write_snapshot(parts, out_file)
 
 #MAIN#######################
 if __name__ == '__main__':
