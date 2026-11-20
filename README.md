@@ -7,7 +7,7 @@ optionally a gas disc) with [AGAMA](https://github.com/GalacticDynamics-Oxford/A
 ## Pipeline
 
 ```
-make_AGAMA_ini.py    ->  ini/AGAMA_C<C>_MD<MD>.ini        model parameters (grid in C = Rh/Rd and MD = Mdisk/Mhalo)
+make_AGAMA_ini.py    ->  ini/AGAMA_C<C>_MD<MD>_Q<Q>.ini   model parameters (grid in C = Rh/Rd, MD = Mdisk/Mhalo; target Q at Rd)
 run_AGAMA_model.py   ->  model_{stars,dm[,gas]}_final_<tag>.txt  + model_final_<tag>.hdf5 (--hdf5)
 check_gadget_run.py      stability diagnostics of a Gadget-4 run (halo/disc radii, thickness, dispersions, A2, energy)
 plot_projection_grid.py  face-on / edge-on projections of every snapshot (--ptype 0 for gas)
@@ -17,7 +17,13 @@ check_ringing.py         look for ringing (vertical breathing, radial oscillatio
 ```
 
 * **Disc:** `QuasiIsothermal` DF; **halo:** isotropic `QuasiSpherical` DF reproducing a Hernquist profile.
-  Both are iterated to self-consistency in the total potential.
+  Both are iterated to self-consistency in the total potential. The disc is specified by a target
+  Toomre Q at R = Rd plus either an exponential scale height h_z/Rd (default: Q = 2, h_z = 0.1 Rd;
+  sigma_z/sigma_R is then an output) or a constant sigma_z/sigma_R (`hz_Rd=None`; the thickness is
+  then an output). Both dispersions decline as exp(-R/2Rd) (`sigmaz0`/`Rsigmaz` rather than `Hdisk`).
+  `run_AGAMA_model.py` rescales sigmar0 (for Q) and sigmaz0 (for h_z) until the self-consistent model
+  meets the targets (`[Calibration]` section; disable with `--no-calibrate`) and suggests a disc
+  softening ~z0/4.
 * **Gas (optional, `gas_disc.py`):** isothermal exponential disc in vertical hydrostatic equilibrium,
   included in the self-consistent potential; `u = c_s^2` for Gadget-4 `ISOTHERM_EQS`.
 * **DM substructure (optional, `substructure.py`):** a fraction `--sub-frac` of the halo mass in
@@ -38,10 +44,10 @@ check_ringing.py         look for ringing (vertical breathing, radial oscillatio
 
 ```bash
 cd ini && python ../make_AGAMA_ini.py && cd ..
-python run_AGAMA_model.py ini/AGAMA_C7p5_MD0p02.ini --ndisk 1e6 --nhalo 1e7 --hdf5
-python run_AGAMA_model.py ini/AGAMA_C7p5_MD0p02.ini --gas-frac 0.1 --gas-cs 10 --ngas 1e6 --hdf5 --tag gas0p1
-python run_AGAMA_model.py ini/AGAMA_C7p5_MD0p02.ini --sub-frac 0.05 --nhalo 1e7 --hdf5 --tag sub0p05
-python run_AGAMA_model.py ini/AGAMA_C7p5_MD0p02.ini --quiet-start --ndisk 1e6 --nhalo 1e7 --hdf5 --tag qs
+python run_AGAMA_model.py ini/AGAMA_C7p5_MD0p02_Q1p2.ini --ndisk 1e6 --nhalo 1e7 --hdf5
+python run_AGAMA_model.py ini/AGAMA_C7p5_MD0p02_Q1p2.ini --gas-frac 0.1 --gas-cs 10 --ngas 1e6 --hdf5 --tag gas0p1
+python run_AGAMA_model.py ini/AGAMA_C7p5_MD0p02_Q1p2.ini --sub-frac 0.05 --nhalo 1e7 --hdf5 --tag sub0p05
+python run_AGAMA_model.py ini/AGAMA_C7p5_MD0p02_Q1p2.ini --quiet-start --ndisk 1e6 --nhalo 1e7 --hdf5 --tag qs
 ```
 
 For Gadget-4 runs with substructure, set `SofteningClassOfPartType3` to the halo softening class.

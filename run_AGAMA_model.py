@@ -80,6 +80,7 @@ def read_ini(filename, halo_cutoff=False):
         scmDisk=sec('SelfConsistentModel disk'),
         scm=sec('SelfConsistentModel'),
         solarRadius=ini.getfloat('Data', 'SolarRadius') if ini.has_section('Data') else 8.0,
+        calib=sec('Calibration'),
     )
     for key in ('potDisk', 'potHalo', 'dfDisk', 'scmHalo', 'scmDisk', 'scm'):
         if cfg[key] is None:
@@ -108,7 +109,32 @@ def print_info(model, label, gas=None):
     sys.stdout.flush()
 
 
-def build_model(cfg, niter=5, verbose=True, gas=None, sub=None):
+def disc_profile(model, dfDisk, radii):
+    """Self-consistent disc kinematics at the given radii: Sigma, midplane sigma_R and sigma_z,
+    Toomre Q = sigma_R kappa / (3.36 G Sigma), and the half-thickness h = Sigma / (2 rho_0)."""
+    G = 4.30091727067736e-06
+    pot = model.potential
+    radii = np.atleast_1d(np.asarray(radii, dtype=float))
+    gm = agama.GalaxyModel(potential=pot, df=dfDisk, af=model.af)
+    pts = np.column_stack((radii, 0 * radii, 0 * radii))
+    rho0, vel2 = gm.moments(pts, dens=True, vel=False, vel2=True)
+    t, w = np.polynomial.legendre.leggauss(40)
+    t = 0.5 * (t + 1); w = 0.5 * w
+    zz = 5.0 * t ** 3; wz = w * 15.0 * t ** 2  # z = 5 t^3 concentrates nodes near the midplane
+    grid = np.column_stack((np.repeat(radii, len(zz)), np.zeros(len(radii) * len(zz)), np.tile(zz, len(radii))))
+    Sigma = 2 * (model.components[0].density.density(grid).reshape(len(radii), len(zz)) * wz).sum(axis=1)
+    out = []
+    for i, R in enumerate(radii):
+        _, d = pot.forceDeriv([R, 0, 0])
+        Om2 = -pot.force([R, 0, 0])[0] / R
+        kappa = np.sqrt(-d[0] + 3 * Om2)
+        sR, sz = np.sqrt(vel2[i, 0]), np.sqrt(vel2[i, 2])
+        out.append(dict(R=R, Sigma=Sigma[i], sigR=sR, sigz=sz, Q=sR * kappa / (3.36 * G * Sigma[i]),
+                        h=Sigma[i] / (2 * model.components[0].density.density([R, 0, 0]))))
+    return out
+
+
+def build_model(cfg, niter=5, verbose=True, gas=None, sub=None, calibrate=True, tol=0.01, maxcal=6):
     scm = dict(cfg['scm'])
     if gas is not None:
         # the gas layer is only ~10-50 pc thick: the CylSpline potential grid must resolve it
@@ -144,7 +170,7 @@ def build_model(cfg, niter=5, verbose=True, gas=None, sub=None):
                                             density=densHaloInit)
         return dfDisk, dfHalo
 
-    for it in range(1, niter + 1):
+    def iterate(label):
         dfDisk, dfHalo = make_dfs()
         model.components[0] = agama.Component(df=dfDisk, disklike=True, **cfg['scmDisk'])
         model.components[1] = agama.Component(df=dfHalo, disklike=False, **cfg['scmHalo'])
@@ -155,8 +181,47 @@ def build_model(cfg, niter=5, verbose=True, gas=None, sub=None):
             model.components[2] = agama.Component(density=gas.density, disklike=True)
             model.iterate()
         if verbose:
-            print_info(model, 'it%d' % it, gas)
+            print_info(model, label, gas)
             print('       (iteration took %.1f s)' % (time.time() - t0))
+
+    for it in range(1, niter + 1):
+        iterate('it%d' % it)
+
+    # enforce the [Calibration] targets, measured in the self-consistent model at RQ:
+    #   Qtarget only:      rescale sigmar0 and sigmaz0 together (keeps sigma_z/sigma_R fixed)
+    #   Qtarget + hz_Rd:   rescale sigmar0 for Q and sigmaz0 for the thickness independently
+    # each rescaling is followed by two more iterations
+    calib = cfg.get('calib')
+    if calibrate and calib and 'Qtarget' in calib:
+        Qt = float(calib['Qtarget'])
+        Rd_ = float(cfg['dfDisk'].get('Rdisk', 2.0))
+        RQ = float(calib.get('RQ', Rd_))
+        hzt = float(calib['hz_Rd']) * Rd_ if 'hz_Rd' in calib else None  # target h_z [kpc]
+        dkeys = {k.lower(): k for k in cfg['dfDisk']}
+        kr, kz = dkeys.get('sigmar0'), dkeys.get('sigmaz0')
+        for ical in range(1, maxcal + 1):
+            p = disc_profile(model, make_dfs()[0], [RQ])[0]
+            hz = p['h'] / 2  # disc_profile h = Sigma/(2 rho0) = z0 of sech^2(z/z0); h_z = z0/2
+            msg = '  calibration %d: Q(R=%.3g) = %.4f (target %.4f)' % (ical, RQ, p['Q'], Qt)
+            if hzt is not None:
+                msg += ', h_z = %.4f kpc (target %.4f), sigma_z/sigma_R = %.3f' % (hz, hzt, p['sigz'] / p['sigR'])
+            print(msg)
+            ok = abs(p['Q'] / Qt - 1) < tol and (hzt is None or abs(hz / hzt - 1) < tol)
+            if ok:
+                break
+            if hzt is None:
+                fac = {kr: Qt / p['Q'], kz: Qt / p['Q']}
+            else:
+                # h_z ~ sigma_z^a with 1 <= a <= 2 (halo- vs self-gravity dominated): a = 1.5
+                fac = {kr: Qt / p['Q'], kz: (hzt / hz) ** (1 / 1.5)}
+            for k, f in fac.items():
+                if k is not None:
+                    cfg['dfDisk'][k] = '%.6g' % (float(cfg['dfDisk'][k]) * f)
+            print('    -> %s' % ', '.join('%s = %s' % (k, cfg['dfDisk'][k]) for k in fac if k is not None))
+            for j in range(2):
+                iterate('cal%d.%d' % (ical, j + 1))
+        else:
+            print('  WARNING: calibration targets not reached to %.0f%% after %d steps' % (100 * tol, maxcal))
 
     if gas is not None:  # gas profile consistent with the final potential
         gas.density = gas.update(model.potential)
@@ -276,6 +341,8 @@ def main():
     ap.add_argument('--qs-oversample', type=float, default=2.0,
                     help='quiet start: request oversample*N/2 pool points (AGAMA returns ~5x more); >= 1 '
                          'guarantees no duplicates (default 2)')
+    ap.add_argument('--no-calibrate', action='store_true',
+                    help='do not rescale the disc dispersions to the [Calibration] Qtarget')
     ap.add_argument('--no-diagnostics', action='store_true', help='skip rotation curve/profile output')
     args = ap.parse_args()
 
@@ -308,8 +375,20 @@ def main():
                                     rng=np.random.default_rng(args.seed), even_npart=args.quiet_start)
             print('  substructure: ' + sub.summary())
         t0 = time.time()
-        model, dfDisk, dfHalo = build_model(cfg, niter=args.niter, gas=gas, sub=sub)
+        model, dfDisk, dfHalo = build_model(cfg, niter=args.niter, gas=gas, sub=sub,
+                                            calibrate=not args.no_calibrate)
         print('Model built in %.1f s' % (time.time() - t0))
+        Rd_ = float(cfg['dfDisk'].get('Rdisk', 2.0))
+        prof = disc_profile(model, dfDisk, Rd_ * np.array([0.5, 1, 1.5, 2, 3, 4]))
+        print('  disc:  R [kpc]   Sigma [Msun/kpc^2]  sigma_R  sigma_z  sigma_z/sigma_R    Q     z0 [kpc]  h_z/Rd')
+        for p in prof:
+            print('        %6.2f     %10.4g       %6.2f   %6.2f      %.3f        %5.2f   %.4f   %.3f' %
+                  (p['R'], p['Sigma'], p['sigR'], p['sigz'], p['sigz'] / p['sigR'], p['Q'], p['h'], p['h'] / 2 / Rd_))
+        print('  (z0 = Sigma / 2 rho_0, the sech^2(z/z0) scale; exponential scale height h_z = z0/2;'
+              ' suggested disc softening ~ z0/4 = %.3f kpc)' % (prof[1]['h'] / 4))
+        if prof[1]['h'] < 2 * args.softening:
+            print('  WARNING: disc z0 at Rd (%.3f kpc) < 2 x softening (%.3f kpc): use a smaller '
+                  'disc softening in Gadget' % (prof[1]['h'], args.softening))
 
         prefix = os.path.join(args.outdir, 'model_' + tag)
         if not args.no_diagnostics:
