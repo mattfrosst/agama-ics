@@ -13,6 +13,7 @@ check_gadget_run.py      stability diagnostics of a Gadget-4 run (halo/disc radi
 plot_projection_grid.py  face-on / edge-on projections of every snapshot (--ptype 0 for gas)
 check_subhalos.py        track subhalo orbits and mass loss (PartType3) through a Gadget-4 run
 plot_substructure_evolution.py  face-on/edge-on projections per snapshot of disc, smooth halo and subhaloes
+check_ringing.py         look for ringing (vertical breathing, radial oscillations) in stellar/gas discs of a high-cadence run
 ```
 
 * **Disc:** `QuasiIsothermal` DF; **halo:** isotropic `QuasiSpherical` DF reproducing a Hernquist profile.
