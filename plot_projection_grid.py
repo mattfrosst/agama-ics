@@ -37,20 +37,23 @@ def main():
     ap.add_argument('--extent', type=float, default=12.0, help='half-width in x, y [kpc]')
     ap.add_argument('--zext', type=float, default=4.0, help='half-height of edge-on panels [kpc]')
     ap.add_argument('--bins', type=int, default=150)
+    ap.add_argument('--zbins', type=int, default=None,
+                    help='vertical bins of the edge-on panels (default: same pixel size as face-on)')
+    ap.add_argument('--every', type=int, default=1, help='plot every n-th snapshot (default 1 = all)')
     ap.add_argument('--ptype', type=int, default=2, help='particle type: 2 = stellar disc (default), 0 = gas')
     ap.add_argument('--out', default=None)
     args = ap.parse_args()
     if args.ncols % 2:
         raise SystemExit('ncols must be even (face-on + edge-on pairs)')
 
-    snaps = sorted(glob.glob(os.path.join(args.outdir, 'snapshot_*.hdf5')))
+    snaps = sorted(glob.glob(os.path.join(args.outdir, 'snapshot_*.hdf5')))[::args.every]
     npairs = args.nrows * args.ncols // 2
     if len(snaps) > npairs:
         print('warning: %d snapshots but only %d slots; plotting the first %d' % (len(snaps), npairs, npairs))
         snaps = snaps[:npairs]
 
     L, Z, nb = args.extent, args.zext, args.bins
-    nbz = max(10, int(round(nb * Z / L)))
+    nbz = args.zbins if args.zbins else max(10, int(round(nb * Z / L)))
     face_area = (2 * L / nb) ** 2
     edge_area = (2 * L / nb) * (2 * Z / nbz)
 

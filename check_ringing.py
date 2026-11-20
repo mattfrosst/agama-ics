@@ -31,17 +31,25 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 
-def annulus_stats(pos, vel, mass, R0, dR):
+def annulus_stats(pos, vel, mass, R0, dR, local_plane=False):
     R = np.hypot(pos[:, 0], pos[:, 1])
     s = np.abs(R - R0) < dR
     p, v = pos[s], vel[s]
     Rs = R[s]
     vR = (p[:, 0] * v[:, 0] + p[:, 1] * v[:, 1]) / Rs
     z, vz = p[:, 2], v[:, 2]
+    tilt = 0.0
+    if local_plane:  # measure z and v_z relative to the annulus' own best-fit plane z = a x + b y + c
+        A = np.column_stack((p[:, 0], p[:, 1], np.ones(len(p))))
+        c, *_ = np.linalg.lstsq(A, z, rcond=None)
+        n = np.array([-c[0], -c[1], 1.0]); n /= np.linalg.norm(n)
+        z = (z - A @ c) * n[2]          # perpendicular distance from the plane
+        vz = v @ n
+        tilt = np.degrees(np.arctan(np.hypot(c[0], c[1])))
     rmsz, sz = np.sqrt(np.mean(z ** 2)), np.std(vz)
     return dict(n=s.sum(), Sigma=mass[s].sum() / (np.pi * ((R0 + dR) ** 2 - (R0 - dR) ** 2)),
                 medz=np.median(np.abs(z)), zvz=np.mean(z * vz) / max(rmsz * sz, 1e-10),
-                vR=np.mean(vR), sigR=np.std(vR), sigz=sz)
+                vR=np.mean(vR), sigR=np.std(vR), sigz=sz, tilt=tilt)
 
 
 def dominant_period(t, y):
@@ -61,6 +69,9 @@ def main():
     ap.add_argument('outdir')
     ap.add_argument('--potential', default=None)
     ap.add_argument('--radii', type=float, nargs='+', default=[1, 2, 4, 8])
+    ap.add_argument('--local-plane', action='store_true',
+                    help='measure z, v_z relative to each annulus\' best-fit plane (removes tilts/bending '
+                         'from the thickness); the tilt of each annulus is also recorded')
     ap.add_argument('--compare', default=None, help='output dir of another run with ringing.npz')
     ap.add_argument('--labels', nargs=2, default=['this run', 'compare'])
     args = ap.parse_args()
@@ -69,7 +80,7 @@ def main():
     comps = {2: 'stars', 0: 'gas'}
     radii = args.radii
     dRs = [max(0.25, 0.125 * R) for R in radii]
-    keys = ['medz', 'zvz', 'vR', 'sigR', 'sigz', 'Sigma']
+    keys = ['medz', 'zvz', 'vR', 'sigR', 'sigz', 'Sigma', 'tilt']
     data = {c: {k: np.zeros((len(files), len(radii))) for k in keys} for c in comps}
     T = np.zeros(len(files))
     for i, fn in enumerate(files):
@@ -84,7 +95,7 @@ def main():
                     continue
                 pos = f[g]['Coordinates'][:] - xc; vel = f[g]['Velocities'][:] - vc; m = f[g]['Masses'][:]
                 for j, (R0, dR) in enumerate(zip(radii, dRs)):
-                    st = annulus_stats(pos, vel, m, R0, dR)
+                    st = annulus_stats(pos, vel, m, R0, dR, local_plane=args.local_plane)
                     for k in keys:
                         data[c][k][i, j] = st[k]
     present = [c for c in comps if np.any(data[c]['Sigma'])]
