@@ -112,17 +112,19 @@ def mirror_agama_wgas(star_file_in, dm_file_in, gas_file_in, out_file, mass_unit
     write_pcls_wgas(sp, sv, sm / mass_unit, hp, hv, hm / mass_unit, gp, gv, gm / mass_unit,
                     out_file, u_gas=gu)
 
-def mirror_agama_all(star_file_in, dm_file_in, out_file, gas_file_in=None, sub=None, mass_unit=1.0):
+def mirror_agama_all(star_file_in, dm_file_in, out_file, gas_file_in=None, sub=None, mass_unit=1.0, mirror=True):
     '''Disc (PartType2) and smooth halo (PartType1) [and gas (PartType0)] are mirrored as in
     mirror_agama; subhalo particles (sub = dict(pos, vel, mass), PartType3) are NOT mirrored,
     since that would split each subhalo in two. The whole system is then shifted to zero
-    centre of mass and zero net momentum. Returns {ptype: first ParticleID}.'''
-    sp, sv, sm = mirror_halves(*load_file_agama(star_file_in))
-    hp, hv, hm = mirror_halves(*load_file_agama(dm_file_in))
+    centre of mass and zero net momentum. Returns {ptype: first ParticleID}.
+    mirror=False: write disc/halo/gas as read (e.g. quiet-start files that are already mirrored).'''
+    mh = mirror_halves if mirror else (lambda *a: list(a))
+    sp, sv, sm = mh(*load_file_agama(star_file_in))
+    hp, hv, hm = mh(*load_file_agama(dm_file_in))
     parts = {2: dict(pos=sp, vel=sv, mass=sm), 1: dict(pos=hp, vel=hv, mass=hm)}
     if gas_file_in is not None:
         g = pd.read_csv(gas_file_in, sep=r"\s+", header=0)
-        gp, gv, gm, gu = mirror_halves(g[['#x', 'y', 'z']].to_numpy(), g[['vx', 'vy', 'vz']].to_numpy(),
+        gp, gv, gm, gu = mh(g[['#x', 'y', 'z']].to_numpy(), g[['vx', 'vy', 'vz']].to_numpy(),
                                        g['mass'].to_numpy(), g['u'].to_numpy())
         parts[0] = dict(pos=gp, vel=gv, mass=gm, u=gu)
     if sub is not None:

@@ -24,6 +24,12 @@ plot_substructure_evolution.py  face-on/edge-on projections per snapshot of disc
   an equilibrium DF). The smooth halo is reduced by the mean subhalo density, so the mean potential is
   unchanged. Subhalo particles are PartType3 (same particle mass as the halo), not mirrored; a
   catalogue `model_subhalos_<tag>.txt` lists each subhalo's properties and ParticleID range.
+* **Quiet start (optional, `--quiet-start`, `quietstart.py`):** every component (disc, halo, gas,
+  each subhalo) is sampled the same way: a weighted quasi-random pool from AGAMA (`method=1`) is
+  ordered along a 3D Hilbert curve in rank-transformed action space (J_R, J_z, J_phi) and
+  systematically resampled to equal-mass particles, which are then point-mirrored. This removes
+  most of the Poisson noise in the action distribution and in M(<r) (e.g. halo M(<r) error
+  ~0.3-2% instead of ~2-9% for 1e5 particles).
 * HDF5 output is point-symmetrically mirrored (`write_mirror_particles.py`); masses default to Msun,
   matching gadget4 `UnitMass_in_g = 1.988e33`.
 
@@ -34,6 +40,7 @@ cd ini && python ../make_AGAMA_ini.py && cd ..
 python run_AGAMA_model.py ini/AGAMA_C7p5_MD0p02.ini --ndisk 1e6 --nhalo 1e7 --hdf5
 python run_AGAMA_model.py ini/AGAMA_C7p5_MD0p02.ini --gas-frac 0.1 --gas-cs 10 --ngas 1e6 --hdf5 --tag gas0p1
 python run_AGAMA_model.py ini/AGAMA_C7p5_MD0p02.ini --sub-frac 0.05 --nhalo 1e7 --hdf5 --tag sub0p05
+python run_AGAMA_model.py ini/AGAMA_C7p5_MD0p02.ini --quiet-start --ndisk 1e6 --nhalo 1e7 --hdf5 --tag qs
 ```
 
 For Gadget-4 runs with substructure, set `SofteningClassOfPartType3` to the halo softening class.

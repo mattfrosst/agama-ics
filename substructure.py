@@ -39,7 +39,8 @@ def r200_of_mass(m, H=0.07):
 
 class SubhaloPopulation:
     def __init__(self, dens_host, M_host, f_sub=0.05, m_min=None, m_max=None, slope=-1.9,
-                 r_b=None, r_cut=None, c0=10.0, particle_mass=None, rng=None, nmin_warn=100):
+                 r_b=None, r_cut=None, c0=10.0, particle_mass=None, rng=None, nmin_warn=100,
+                 even_npart=False):
         self.dens_host = dens_host
         self.M_host = float(M_host)
         self.f_sub = float(f_sub)
@@ -53,6 +54,7 @@ class SubhaloPopulation:
         self.c0 = c0
         self.rng = rng or np.random.default_rng()
         self.nmin_warn = nmin_warn
+        self.even_npart = even_npart  # quiet start mirrors each subhalo about its centre
         if self.m_min >= self.m_max:
             raise ValueError('sub m_min (%.3g) must be < m_max (%.3g)' % (self.m_min, self.m_max))
         self._draw_masses()
@@ -71,7 +73,10 @@ class SubhaloPopulation:
         if len(masses) > 1 and abs(sum(masses[:-1]) - target) < abs(sum(masses) - target):
             masses.pop()
         # equal-mass particles: round each subhalo to an integer number of particles
-        npart = np.maximum(1, np.round(np.array(masses) / self.mp).astype(int))
+        if self.even_npart:
+            npart = np.maximum(2, 2 * np.round(np.array(masses) / (2 * self.mp)).astype(int))
+        else:
+            npart = np.maximum(1, np.round(np.array(masses) / self.mp).astype(int))
         order = np.argsort(-npart)
         self.npart = npart[order]
         self.mass = self.npart * self.mp
@@ -112,9 +117,11 @@ class SubhaloPopulation:
                  self.npart.min(), self.npart.max(), self.f_max, self.r_b, self.r_cut))
 
     # ---- orbits and internal structure ---------------------------------------------------
-    def sample(self, pot, softening=None):
+    def sample(self, pot, softening=None, quiet=False, rng=None, oversample=2):
         """Sample subhalo centres in total potential `pot` and particles for each subhalo.
-        Returns dict with particle arrays and a catalogue."""
+        quiet=True: each subhalo's particles are drawn with the action-space quiet start
+        (quietstart.quiet_sample, actions in the subhalo's own potential, mirrored about its
+        centre). Returns dict with particle arrays and a catalogue."""
         nsub = len(self.mass)
         dfc = agama.DistributionFunction(type='QuasiSpherical', potential=pot, density=self.dens_mean)
         centres, _ = agama.GalaxyModel(potential=pot, df=dfc).sample(nsub)
@@ -131,8 +138,16 @@ class SubhaloPopulation:
             sp = agama.Potential(type='Spheroid', mass=self.mass[i], gamma=1, beta=3, alpha=1,
                                  scaleRadius=r_s[i], outerCutoffRadius=r_t[i], cutoffStrength=2)
             df = agama.DistributionFunction(type='QuasiSpherical', potential=sp, density=sp)
-            xv, _ = agama.GalaxyModel(potential=sp, df=df).sample(int(self.npart[i]))
-            xv[:, :3] -= xv[:, :3].mean(axis=0); xv[:, 3:] -= xv[:, 3:].mean(axis=0)  # exact centring
+            gm = agama.GalaxyModel(potential=sp, df=df)
+            if quiet:
+                from quietstart import quiet_sample
+                afs = agama.ActionFinder(sp)
+                xv, _, _ = quiet_sample(lambda n: gm.sample(n, method=1) + (None,), afs,
+                                        int(self.npart[i]) // 2, rng or self.rng, oversample=oversample,
+                                        verbose=False)  # mirrored about the centre: exactly centred
+            else:
+                xv, _ = gm.sample(int(self.npart[i]))
+                xv[:, :3] -= xv[:, :3].mean(axis=0); xv[:, 3:] -= xv[:, 3:].mean(axis=0)  # exact centring
             pos.append(xv[:, :3] + centres[i, :3]); vel.append(xv[:, 3:] + centres[i, 3:])
             sid.append(np.full(len(xv), i))
         cat = np.column_stack((np.arange(nsub), self.mass, self.npart, centres, rc, r_s, r_t, cm))

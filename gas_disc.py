@@ -71,19 +71,39 @@ class GasDisc:
         out = np.exp(lnrho0 - dPhi / self.cs2)
         return np.where((R <= self.Rtrunc) & (z <= self.zmax), out, 0.0)
 
-    def sample(self, n, density, gamma=None):
-        """Sample n particles. Returns (posvel[n,6], mass[n], u[n])."""
-        pos, mass = density.sample(n)
-        mass = np.full(n, self.mass / n)  # equal-mass particles with the exact total mass
+    def velocities(self, pos):
+        """Rotation with pressure support at positions pos[n,3]: returns (vel[n,3], frac v_phi^2<0)."""
         R = np.hypot(pos[:, 0], pos[:, 1]); z = pos[:, 2]
-        # radial gravity at the particle position and pressure-gradient correction
-        dPhidR = -(pos[:, 0] * self.pot.force(pos)[:, 0] + pos[:, 1] * self.pot.force(pos)[:, 1]) / np.maximum(R, 1e-12)
+        F = self.pot.force(pos)
+        dPhidR = -(pos[:, 0] * F[:, 0] + pos[:, 1] * F[:, 1]) / np.maximum(R, 1e-12)
         dR = np.maximum(1e-3 * R, 1e-4)
         xp = np.column_stack((R + dR, 0 * R, z)); xm = np.column_stack((np.maximum(R - dR, 1e-6), 0 * R, z))
         dlnrho = (np.log(self.rho(xp) + 1e-300) - np.log(self.rho(xm) + 1e-300)) / (xp[:, 0] - xm[:, 0])
         vphi2 = R * dPhidR + self.cs2 * R * dlnrho
         vphi = np.sqrt(np.maximum(vphi2, 0.0))
         phi = np.arctan2(pos[:, 1], pos[:, 0])
-        vel = np.column_stack((-vphi * np.sin(phi), vphi * np.cos(phi), 0 * R))
-        u = np.full(n, self.cs2 if gamma is None else self.cs2 / (gamma - 1))
-        return np.column_stack((pos, vel)), mass, u, np.mean(vphi2 < 0)
+        return np.column_stack((-vphi * np.sin(phi), vphi * np.cos(phi), 0 * R)), np.mean(vphi2 < 0)
+
+    def u_value(self, gamma=None):
+        return self.cs2 if gamma is None else self.cs2 / (gamma - 1)
+
+    def sample(self, n, density, gamma=None):
+        """Sample n particles. Returns (posvel[n,6], mass[n], u[n], frac v_phi^2<0)."""
+        pos, mass = density.sample(n)
+        mass = np.full(n, self.mass / n)  # equal-mass particles with the exact total mass
+        vel, fneg = self.velocities(pos)
+        u = np.full(n, self.u_value(gamma))
+        return np.column_stack((pos, vel)), mass, u, fneg
+
+    def sample_pool(self, nreq, gamma=None):
+        """Weighted quasi-random pool for the quiet start: (xv[npool,6], weight[npool], u[npool]).
+        Samples R*rho_g(R,z) in (R, z, phi) with agama.sampleNdim(method=1) (Density.sample(method=1)
+        fails an internal assertion in AGAMA 1.0)."""
+        def f(p):
+            return p[:, 0] * self.rho(np.column_stack((p[:, 0], 0 * p[:, 0], p[:, 1])))
+        pts, w, _, _ = agama.sampleNdim(f, nreq, [0, -self.zmax, 0], [self.Rtrunc, self.zmax, 2 * np.pi], method=1)
+        R, z, phi = pts[:, 0], pts[:, 1], pts[:, 2]
+        pos = np.column_stack((R * np.cos(phi), R * np.sin(phi), z))
+        vel, _ = self.velocities(pos)
+        w = w * self.mass / w.sum()  # exact total gas mass
+        return np.column_stack((pos, vel)), w, np.full(len(w), self.u_value(gamma))
